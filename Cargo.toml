@@ -1,0 +1,13 @@
+[package]
+name = "nats-file-config"
+version = "0.1.0"
+edition = "2021"
+publish = false
+author = ["sravan sravan-s@protonmail.com"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-nats = "0.31.0"
+serde = { version = "1.0.188", features = ["derive"] }
+serde_yaml = "0.9"
