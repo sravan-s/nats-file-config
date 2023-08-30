@@ -1,5 +1,5 @@
 use async_nats::ConnectOptions;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 use std::{path::Path, time::Duration};
 
 pub fn some_and_true(optional_bool: Option<bool>) -> bool {
@@ -43,6 +43,13 @@ pub fn some_and_true(optional_bool: Option<bool>) -> bool {
  * - Nkey
  * - Credential File (.creds)
 */
+enum AuthOptions {
+    NoAuth,
+    UserPassword(String, String),
+    Token(String),
+    Nkey(String),
+    CredentialFile(String),
+}
 /** I guess these are TLS options?
     enable/disable
     pub(crate) certificates: Vec<PathBuf>,
@@ -59,8 +66,36 @@ enum ServerName {
 
 #[derive(Deserialize)]
 struct PlainOptions {
-    name: Option<String>,
     server: ServerName,
+
+    //-- auth section --//
+    // I added this to deterministically create auth options
+    auth_type: Option<String>,
+
+    // with_user_and_password
+    // co.user_password(user: string, pass: string)
+    user: Option<String>,
+    pass: Option<String>,
+
+    // with_token
+    // co.token(token: string)
+    token: Option<String>,
+
+    // with_nkey
+    // co.nkey(seed: string)
+    nkey: Option<String>,
+
+    // with_credential_file
+    // credentials_file(path: PathBuf)
+    // self.credentials(&cred_file_contents) (?)
+    credential_file: Option<String>,
+
+    // JWT is also an option, but doesnt look serializable
+    // Should be added as a plugin
+
+    //
+    // -- end auth section --//
+    name: Option<String>,
 
     ping_interval: Option<Duration>,
     flush_interval: Option<Duration>, // to send to server so maybe useless for us?
@@ -85,22 +120,50 @@ struct PlainOptions {
     // verbose // found this on nats site
 }
 
+fn parse_auth_options(po: &PlainOptions) -> AuthOptions {
+    let auth_type = po.auth_type.clone();
+    match auth_type {
+        Some(auth_type) => match auth_type.as_str() {
+            "no_auth" => AuthOptions::NoAuth,
+            "user_password" => {
+                let user = po.user.clone().unwrap();
+                let password = po.pass.clone().unwrap();
+                AuthOptions::UserPassword(user.to_string(), password.to_string())
+            }
+            "token" => {
+                let token = po.token.clone().unwrap();
+                AuthOptions::Token(token.to_string())
+            }
+            "nkey" => {
+                let nkey = po.nkey.clone().unwrap();
+                AuthOptions::Nkey(nkey.to_string())
+            }
+            "credential_file" => {
+                let credential_path = po.credential_file.clone().unwrap();
+                let credential_file = std::fs::read_to_string(credential_path).unwrap();
+                AuthOptions::CredentialFile(credential_file.to_string())
+            }
+            _ => panic!("Invalid auth type"),
+        },
+        None => AuthOptions::NoAuth,
+    }
+}
+
 pub struct ConnectOptionsAdapter {
     pub(crate) connect_options: ConnectOptions,
     pub(crate) servers: ServerName,
-    // to do: add auth options
-    // pub(crate) auth: Option<String>,
 }
 
 impl ConnectOptionsAdapter {
+    fn cook_auth(&self, options: &PlainOptions) {}
     pub fn from(file_path: &Path) -> Self {
         let file = std::fs::File::open(file_path).unwrap();
         let options: PlainOptions = serde_yaml::from_reader(file).unwrap();
         let mut co = ConnectOptions::default();
-        if let Some(name) = options.name {
+        if let Some(name) = options.name.clone() {
             co = co.name(name);
         }
-
+        // probably converted into some MACRO?
         if let Some(ping_interval) = options.ping_interval {
             co = co.ping_interval(ping_interval);
         }
@@ -130,7 +193,7 @@ impl ConnectOptionsAdapter {
         if let Some(sender_capacity) = options.sender_capacity {
             co = co.client_capacity(sender_capacity); // is intentional. see official nats
         }
-        if let Some(inbox_prefix) = options.inbox_prefix {
+        if let Some(inbox_prefix) = options.inbox_prefix.clone() {
             co = co.custom_inbox_prefix(inbox_prefix);
         }
         if let Some(request_timeout) = options.request_timeout {
@@ -148,16 +211,31 @@ impl ConnectOptionsAdapter {
         if let Some(read_buffer_capacity) = options.read_buffer_capacity {
             co = co.read_buffer_capacity(read_buffer_capacity);
         }
-        ConnectOptionsAdapter {
+
+        let auth: AuthOptions = parse_auth_options(&options);
+
+        match auth {
+            AuthOptions::NoAuth => {}
+            AuthOptions::UserPassword(user, password) => {
+                co = co.user_and_password(user, password);
+            }
+            AuthOptions::Token(token) => {
+                co = co.token(token);
+            }
+            AuthOptions::Nkey(nkey) => {
+                co = co.nkey(nkey);
+            }
+            AuthOptions::CredentialFile(credential_file) => {
+                co = co.credentials(&credential_file).unwrap();
+            }
+        }
+
+        let adapter = ConnectOptionsAdapter {
             connect_options: co,
             servers: options.server,
-        }
-    }
-}
+        };
 
-impl ConnectOptionsAdapter {
-    pub fn auth() {
-        print!("Will be implemented soon");
+        adapter
     }
 }
 
@@ -182,6 +260,9 @@ mod tests {
 
     #[test]
     fn convert_successful_mock_file() {
-        let co = ConnectOptionsAdapter::from(Path::new("tests/mock_1.yml"));
+        let _co = ConnectOptionsAdapter::from(Path::new("tests/mock_1.yml"));
+        // to do: add more asserts
     }
+
+    // todo: add more tests for auth_types
 }
